@@ -12,7 +12,7 @@ if __name__ == "__main__":
     # Amazon.com Inc. (AMZN) - Retail
     # Microsoft Corporation (MSFT) - Technology
     # Johnson & Johnson (JNJ) - Healthcare
-    # Berkshire Hathaway Inc. (BRK.A) - Conglomerate
+    # Tesla (TSLA) - Consumer Cyclical
     # Meta Platforms Inc. (META) - Technology
     # Procter & Gamble Co. (PG) - Consumer Goods
     # Visa Inc. (V) - Financial Services
@@ -28,7 +28,7 @@ if __name__ == "__main__":
     # McDonald’s Corporation (MCD) - Restaurants
     # UnitedHealth Group Incorporated (UNH) - Healthcare
 
-    stocks = ['AAPL','GOOGL','AMZN','MSFT','AAPL','JNJ','BRK-A','META','PG', 'V',
+    stocks = ['AAPL','GOOGL','AMZN','MSFT','AAPL','JNJ','TSLA','META','PG', 'V',
               'JPM','XOM','KO','WMT','PFE', 'HD','MA','NKE','DIS','MCD', 'UNH']
     start_date = '2013-01-01'
     end_date = '2023-05-18'
