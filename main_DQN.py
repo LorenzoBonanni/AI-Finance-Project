@@ -66,7 +66,7 @@ class Agent:
     def __init__(self, n_asset, input_size):
         self.n_asset = n_asset
         self.action_space = 40  # 0 BUY, 1 SELL
-        self.nLayers = 2
+        self.nLayers = 10
         self.nNodes = 32
 
         self.alpha = 0.5  # learning rate
@@ -200,10 +200,10 @@ class Environment:
             money_this_asset = allocation_money[0][index]
             variation_money_this_asset = (pct_value / 100) * money_this_asset
             self.money += variation_money_this_asset
-            #
-            # action_weight = weights[0][index]
-            #
-            #
+
+            action_weight = weights[0][index]
+
+
             # # SELL
             # if action_weight < 0:
             #     # if percentage < 0, SELL is best
@@ -229,7 +229,7 @@ class Environment:
             torch.mm(weights.to(torch.float32), torch.mm(rets_cov.to(torch.float32), weights.t().to(torch.float32))))
         P_sharpe = (P_ret - risk_free_rate) / P_dev_std
         # Good Sharpe ratio
-        reward = P_sharpe.squeeze(1).item() - torch.mean(es).item()
+        reward = P_sharpe.squeeze(1).item()
 
         done = 1 if self.money < 0 else 0
         if done:
@@ -295,7 +295,7 @@ def train():
     # Environment() parameters
     path_assets = 'AGGREGATED_DATA.csv'
     lag = 5
-    money = 1000
+    money = 10_000
     # Agent() parameters
     n_asset = 20
 
@@ -365,7 +365,7 @@ def train():
     plt.show()
 
     # save the net model
-    torch.save(agent.DQN_net, f'DQN_net_LR{optimizer_learning_rate}.pth')
+    torch.save(agent.DQN_net, f'DQN_net.pth')
 
 
 def test():
@@ -375,7 +375,7 @@ def test():
     # Environment() parameters
     path_assets = 'AGGREGATED_DATA.csv'
     lag = 5
-    money = 1000
+    money = 10_000
     # Agent() parameters
     n_asset = 20
 
@@ -445,7 +445,7 @@ def test():
     plt.savefig('reward.png', dpi=200)
     plt.show()
     print(f"CUMULATIVE REWARD: {sum(reward_evolution)}")
-    print(f"AVG REWARD: {sum(reward_evolution)}")
+    print(f"AVG REWARD: {(1/len(reward_evolution)) *sum(reward_evolution)}")
 
 
 if __name__ == "__main__":
