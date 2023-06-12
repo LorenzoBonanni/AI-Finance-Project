@@ -190,31 +190,25 @@ class Environment:
     def get_reward(self, weights, next_day_reward, lag, es):
         # get percentage change of t+1
         next_day = self.data[next_day_reward, :]
-        # compute the allocation in real money to each asset
-        allocation_money = weights * self.money
 
-        reward = 0
+        # reward = 0
         risk_free_rate = 5.12  # USA Department of Treasury (3 months interest rate)
 
-        # iterate over each percentage
-        for index, pct_value in enumerate(next_day):
-            money_this_asset = allocation_money[0][index]
-            variation_money_this_asset = (pct_value / 100) * money_this_asset
-            self.money += variation_money_this_asset
+        portolio_returns = torch.mul(next_day.to(torch.float32), weights.flatten())
+        portfolio_total_return = portolio_returns.sum()
+        self.money += self.money * portfolio_total_return
 
-        rets = self.data[next_day_reward - lag:next_day_reward, :]
-        rets_mean = torch.mean(rets, dim=0)
-        rets_cov = torch.cov(rets.t())
-        P_ret = torch.sum(rets_mean * weights)
-        P_dev_std = torch.sqrt(
-            torch.mm(weights.to(torch.float32), torch.mm(rets_cov.to(torch.float32), weights.t().to(torch.float32))))
-        P_sharpe = (P_ret - risk_free_rate) / P_dev_std
+        # rets = self.data[next_day_reward - lag:next_day_reward, :]
+        # rets_mean = torch.mean(portolio_returns, dim=0)
+        # rets_cov = torch.cov(portolio_returns)
+        P_std = portolio_returns.std()
+        # P_dev_std = torch.sqrt(
+        #     torch.mm(weights.to(torch.float32), torch.multiply(rets_cov.to(torch.float32), weights.t().to(torch.float32))))
+        P_sharpe = (portfolio_total_return - risk_free_rate) / P_std
         # Good Sharpe ratio
-        reward = P_sharpe.squeeze(1).item()
+        reward = P_sharpe.item()
 
         done = 1 if self.money < 0 else 0
-        if done:
-            self.money = self.money_reset
 
         return reward, done
 
@@ -314,6 +308,8 @@ def train():
     for next_t in range(lag + 2, index_train):
         weights, best_actions = agent.act(state.flatten())
         reward, done = env.get_reward(weights=weights, next_day_reward=next_t, lag=lag, es=state.es)
+        if done:
+            env.money = env.money_reset
         next_state = env.get_new_state(t=next_t, lag=lag, last_alloc=weights, portfolio_val=env.money,
                                        confidence_level=confidence_level)
         reward_evolution.append(reward)
@@ -330,10 +326,8 @@ def train():
 
         # TRAINING LAUNCH
         if len(memory_buffer) >= BATCH_SIZE:
-            for _ in range(10):
-                DQNUpdate(neural_net=agent.DQN_net, memory_buffer=memory_buffer,
-                          optimizer=optimizer, agent=agent, device=DEVICE, state_dim=STATE_DIM, BATCH_SIZE=BATCH_SIZE)
-        # averaged_rewards.append(reward)
+            DQNUpdate(neural_net=agent.DQN_net, memory_buffer=memory_buffer,
+                      optimizer=optimizer, agent=agent, device=DEVICE, state_dim=STATE_DIM, BATCH_SIZE=BATCH_SIZE)
         print(f"EPISODE {episode}, PORTFOLIO: {env.money}, EPS: {agent.epsilon}")
         episode += 1
 
@@ -376,6 +370,14 @@ def test():
     DQN_net.eval()
     # instantiate agent
     agent = Agent(n_asset=n_asset, input_size=STATE_DIM)
+    # print("TRAINED")
+    # for name, param in DQN_net.named_parameters():
+    #     print(f"{name}: {param}")
+    # print('*' * 50)
+    # print("NOT TRAINED")
+    # for name, param in agent.DQN_net.named_parameters():
+    #     print(f"{name}: {param}")
+
     agent.epsilon = 0
     agent.DQN_net = DQN_net
 
@@ -390,17 +392,18 @@ def test():
         next_state = env.get_new_state(t=next_t, lag=lag, last_alloc=weights, portfolio_val=env.money,
                                        confidence_level=confidence_level)
         state = next_state
-
         print(f"EPISODE {episode},PORTFOLIO: {env.money}")
         wallet_evolution.append(env.money.item())
         reward_evolution.append(reward)
+        if done == 1:
+            break
         episode += 1
 
     # Plot Money Evolution
     plt.figure(figsize=(12, 6))
-    df = pd.DataFrame({"Dates": dates.values, "money": wallet_evolution})
+    df = pd.DataFrame({"Dates": dates.values[:len(wallet_evolution)], "money": wallet_evolution})
     df.set_index('Dates', inplace=True)
-    ax = df.plot.area(figsize=(12, 6), color='green')
+    ax = df.plot.area(figsize=(12, 6), color='green', stacked=False)
     ax.collections[0].set_facecolor('lightblue')
     ax.collections[0].set_alpha(0.3)
     plt.xticks(rotation=45)
@@ -413,7 +416,7 @@ def test():
 
     # Plot Reward Evolution
     plt.figure(figsize=(12, 6))
-    plt.plot(range(index_train, data.shape[0]), reward_evolution, color='red', label='reward test')
+    plt.plot(range(index_train, index_train+len(reward_evolution)), reward_evolution, color='red', label='reward test')
     plt.title('Reward evolution')
     plt.legend()
     plt.savefig('reward.png', dpi=200)
@@ -424,5 +427,5 @@ def test():
 
 
 if __name__ == "__main__":
-    train()
+    # train()
     test()
