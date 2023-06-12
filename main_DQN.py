@@ -69,7 +69,6 @@ class Agent:
         self.nLayers = 10
         self.nNodes = 32
 
-        self.alpha = 0.5  # learning rate
         self.gamma = 0.95  # discount factor
         self.epsilon = 1  # action epsilon-greedy --> then multiplied by 0.999
 
@@ -79,10 +78,12 @@ class Agent:
 
     def act(self, state):
         # with epsilon probability choose random
-        self.epsilon *= 0.999  # epsilon greedy action selection decrease over time
+        decay_factor = 0.999
+        self.epsilon *= decay_factor  # epsilon greedy action selection decrease over time
         if random.random() < self.epsilon:
             # random choice an action to perform
-            weights = np.random.uniform(-5, 5, size=self.n_asset)
+            # weights = np.random.uniform(-5, 5, size=self.n_asset)
+            weights = np.random.normal(size=self.n_asset)
 
             weights_sum = np.sum(weights) + self.epsilon_avoid_0
             weights /= weights_sum
@@ -294,7 +295,7 @@ def train():
 
     # Environment() parameters
     path_assets = 'AGGREGATED_DATA.csv'
-    lag = 5
+    lag = 30
     money = 10_000
     # Agent() parameters
     n_asset = 20
@@ -354,7 +355,7 @@ def train():
                 DQNUpdate(neural_net=agent.DQN_net, memory_buffer=memory_buffer,
                           optimizer=optimizer, agent=agent, device=DEVICE, state_dim=STATE_DIM, BATCH_SIZE=BATCH_SIZE)
         # averaged_rewards.append(reward)
-        print(f"EPISODE {episode}, PORTFOLIO: {env.money}")
+        print(f"EPISODE {episode}, PORTFOLIO: {env.money}, EPS: {agent.epsilon}")
         episode += 1
 
     plt.figure(figsize=(12, 6))
@@ -374,7 +375,7 @@ def test():
 
     # Environment() parameters
     path_assets = 'AGGREGATED_DATA.csv'
-    lag = 5
+    lag = 30
     money = 10_000
     # Agent() parameters
     n_asset = 20
@@ -395,6 +396,7 @@ def test():
     STATE_DIM = len(state)
     # instantiate agent
     agent = Agent(n_asset=n_asset, input_size=STATE_DIM)
+    agent.epsilon = 0
 
     DQN_net = torch.load('DQN_net.pth')
     DQN_net.eval()
@@ -403,17 +405,7 @@ def test():
     reward_evolution = []
     wallet_evolution = [money]
     for next_t in range(index_train, data.shape[0]):
-        actions = DQN_net(state.flatten())
-        actions = actions.reshape(int(actions.shape[0] / 2), 2)
-        weights = torch.empty((1, agent.n_asset), device=DEVICE)
-
-        best_actions = torch.argmax(actions, dim=1)
-        for index, value in enumerate(best_actions):
-            if value == 0:  # BUY
-                weights[0][index] = actions[index][value]
-            else:  # SELL
-                weights[0][index] = -actions[index][value]
-
+        weights, best_actions = agent.act(state.flatten())
         reward, done = env.get_reward(weights=weights, next_day_reward=next_t, lag=lag, es=state.es)
         next_state = env.get_new_state(t=next_t, lag=lag, last_alloc=weights, portfolio_val=env.money,
                                        confidence_level=confidence_level)
@@ -446,8 +438,9 @@ def test():
     plt.show()
     print(f"CUMULATIVE REWARD: {sum(reward_evolution)}")
     print(f"AVG REWARD: {(1/len(reward_evolution)) *sum(reward_evolution)}")
+    print(f"ROI: {round((wallet_evolution[-1]-money)/money*100, 2)}%")
 
 
 if __name__ == "__main__":
-    train()
+    # train()
     test()
