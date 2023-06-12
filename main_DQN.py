@@ -69,7 +69,7 @@ class Agent:
         self.nLayers = 10
         self.nNodes = 32
 
-        self.gamma = 0.95  # discount factor
+        self.gamma = 0.7  # discount factor
         self.epsilon = 1  # action epsilon-greedy --> then multiplied by 0.999
 
         self.epsilon_avoid_0 = 1e-9  # epsilon in order to avoid division by 0
@@ -202,26 +202,6 @@ class Environment:
             variation_money_this_asset = (pct_value / 100) * money_this_asset
             self.money += variation_money_this_asset
 
-            action_weight = weights[0][index]
-
-
-            # # SELL
-            # if action_weight < 0:
-            #     # if percentage < 0, SELL is best
-            #     if pct_value < 0:
-            #         reward += 1
-            #     # percentage >= 0, SELL is NOT good
-            #     else:
-            #         reward += -1
-            # # BUY
-            # else:
-            #     # if percentage < 0, BUY is NOT good
-            #     if pct_value < 0:
-            #         reward += -1
-            #     # percentage >= 0, BUY is best
-            #     else:
-            #         reward += 1
-
         rets = self.data[next_day_reward - lag:next_day_reward, :]
         rets_mean = torch.mean(rets, dim=0)
         rets_cov = torch.cov(rets.t())
@@ -297,7 +277,6 @@ def train():
     path_assets = 'AGGREGATED_DATA.csv'
     lag = 30
     money = 10_000
-    # Agent() parameters
     n_asset = 20
 
     # instantiate environment
@@ -377,7 +356,6 @@ def test():
     path_assets = 'AGGREGATED_DATA.csv'
     lag = 30
     money = 10_000
-    # Agent() parameters
     n_asset = 20
 
     # instantiate environment
@@ -394,18 +372,20 @@ def test():
     state = env.get_new_state(t=index_train + lag + 1, lag=lag, last_alloc=initial_alloc, portfolio_val=env.money,
                               confidence_level=confidence_level)
     STATE_DIM = len(state)
+    DQN_net = torch.load('DQN_net.pth')
+    DQN_net.eval()
     # instantiate agent
     agent = Agent(n_asset=n_asset, input_size=STATE_DIM)
     agent.epsilon = 0
-
-    DQN_net = torch.load('DQN_net.pth')
-    DQN_net.eval()
+    agent.DQN_net = DQN_net
 
     episode = 1
     reward_evolution = []
     wallet_evolution = [money]
+    weights_evolution = np.empty(shape=(1, n_asset))
     for next_t in range(index_train, data.shape[0]):
         weights, best_actions = agent.act(state.flatten())
+        weights_evolution = np.vstack((weights_evolution, weights.detach().cpu().numpy()))
         reward, done = env.get_reward(weights=weights, next_day_reward=next_t, lag=lag, es=state.es)
         next_state = env.get_new_state(t=next_t, lag=lag, last_alloc=weights, portfolio_val=env.money,
                                        confidence_level=confidence_level)
@@ -416,6 +396,7 @@ def test():
         reward_evolution.append(reward)
         episode += 1
 
+    # Plot Money Evolution
     plt.figure(figsize=(12, 6))
     df = pd.DataFrame({"Dates": dates.values, "money": wallet_evolution})
     df.set_index('Dates', inplace=True)
@@ -430,6 +411,7 @@ def test():
     plt.savefig('money.png', dpi=200)
     plt.show()
 
+    # Plot Reward Evolution
     plt.figure(figsize=(12, 6))
     plt.plot(range(index_train, data.shape[0]), reward_evolution, color='red', label='reward test')
     plt.title('Reward evolution')
@@ -442,5 +424,5 @@ def test():
 
 
 if __name__ == "__main__":
-    # train()
+    train()
     test()
