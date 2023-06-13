@@ -92,8 +92,9 @@ class Agent:
 
         # otherwise perform the best actions
         else:
-            # select q(s,a) from network
-            linear_actions = self.DQN_net(state)
+            with torch.no_grad():
+                # select q(s,a) from network
+                linear_actions = self.DQN_net(state)
             linear_actions = linear_actions.reshape(int(linear_actions.shape[0] / 2), 2)
             # select best actions from network output
             best_actions = torch.argmax(linear_actions, dim=1)
@@ -149,19 +150,57 @@ class State:
 
 
 class Environment:
-    def __init__(self, path_assets, money):
-        self.path_assets = path_assets
+    def __init__(self, data_path, money):
+        self.data_path = data_path
         self.money = money
         self.money_reset = money
         self.dates = None
-        self.data = self.load_data()
+        self.real_data = self.load_data()
+        self.data = None
+
+    def generate_data(self, data):
+        def generate_stock_data(actual_hist):
+            # Parameters
+            # drift coefficient
+            mu = actual_hist.pct_change()[1:].mean()
+            # number of steps
+            n = 255
+            # number of sims
+            M = 10
+            # initial stock price
+            S0 = actual_hist.iloc[-1]
+            # volatility
+            sigma = actual_hist.std() / 100
+
+            # calc each time step
+            dt = 2. / (n - 1)
+            # simulation using numpy arrays
+            St = np.exp(
+                (mu - sigma ** 2 / 2) * dt
+                + sigma * np.random.normal(0, np.sqrt(dt), size=(M, n)).T
+            )
+            # include array of 1's
+            St = np.vstack([np.ones(M), St])
+            # multiply through by S0 and return the cumulative product of elements along a given simulation path (axis=0).
+            St = S0 * St.cumprod(axis=0)
+            return St[:, random.choices(range(St.shape[1]))[0]]
+
+        return pd.DataFrame({col: generate_stock_data(data[col]) for col in data.columns})
+
+    def get_starting_state(self, lag, confidence_level):
+        idx = random.randint(255, len(self.data))
+        data = self.data.iloc[idx-255:idx]
+        self.data = self.generate_data(data)
+        initial_alloc = torch.zeros((1, 20), device=DEVICE)
+        state = self.get_new_state(t=lag+1, lag=lag, last_alloc=initial_alloc, portfolio_val=self.money_reset, confidence_level=confidence_level)
+        return state
 
     def load_data(self):
-        # read aggregated data like Dataframe
+        # read aggregated real_data like Dataframe
         # and then convert it to torch.tensor
         # with % between t+1 and t values for
         # each column
-        data = pd.read_csv(self.path_assets)
+        data = pd.read_csv(self.data_path)
         self.dates = data['Date'].copy(deep=True)
         data = data.drop(columns=['Date'])
         data = torch.tensor(data.values, device=DEVICE)
@@ -189,7 +228,7 @@ class Environment:
 
     def get_reward(self, weights, next_day_reward, lag, es):
         # get percentage change of t+1
-        next_day = self.data[next_day_reward, :]
+        next_day = self.real_data[next_day_reward, :]
 
         # reward = 0
         risk_free_rate = 5.12  # USA Department of Treasury (3 months interest rate)
@@ -198,7 +237,7 @@ class Environment:
         portfolio_total_return = portolio_returns.sum()
         self.money += self.money * portfolio_total_return
 
-        # rets = self.data[next_day_reward - lag:next_day_reward, :]
+        # rets = self.real_data[next_day_reward - lag:next_day_reward, :]
         # rets_mean = torch.mean(portolio_returns, dim=0)
         # rets_cov = torch.cov(portolio_returns)
         P_std = portolio_returns.std()
@@ -209,13 +248,15 @@ class Environment:
         reward = P_sharpe.item()
 
         done = 1 if self.money < 0 else 0
+        # if done == 1:
+        #     reward += -100
 
         return reward, done
 
 
 def DQNUpdate(neural_net, memory_buffer, optimizer, agent, device, state_dim: int, BATCH_SIZE):
     """
-    Main update rule for the DQN process. Extract data from the memory buffer and update
+    Main update rule for the DQN process. Extract real_data from the memory buffer and update
     the newtwork computing the gradient.
 
     """
@@ -234,32 +275,25 @@ def DQNUpdate(neural_net, memory_buffer, optimizer, agent, device, state_dim: in
     reward = memory_buffer[:, (state_dim * 2) + n_asset].reshape(BATCH_SIZE, 1)
     done = memory_buffer[:, (state_dim * 2) + n_asset + 1].reshape(BATCH_SIZE, 1)
 
-    with torch.no_grad():
+    # MAYBE WITH GRAD
+    target = neural_net(state)
+    target = target.reshape(target.shape[0], int(target.shape[1] / 2), 2)
 
-        target = neural_net(state)
+    # if done --> to_update = reward
+    output_net = neural_net(next_state)
+    output_net = output_net.reshape(output_net.shape[0], int(output_net.shape[1] / 2), 2)
+    to_update = reward + torch.max(output_net, 2).values * gamma * (1 - done)
 
-        target_copy = torch.clone(target)
-        target_copy = target_copy.reshape(target_copy.shape[0], int(target_copy.shape[1] / 2), 2)
+    for row_n in range(target.shape[0]):
+        for column_n in range(target.shape[1]):
+            target[row_n, column_n, action[row_n, column_n].to(torch.int32)] = to_update[row_n][column_n]
 
-        # if done --> to_update = reward
-        output_net = neural_net(next_state)
-        output_net = output_net.reshape(output_net.shape[0], int(output_net.shape[1] / 2), 2)
-        to_update = reward + torch.max(output_net, 2).values * gamma * (1 - done)
+    predicted = neural_net(state)
+    predicted = predicted.reshape(predicted.shape[0], int(predicted.shape[1] / 2), 2)
 
-        for row_n in range(target_copy.shape[0]):
-            for column_n in range(target_copy.shape[1]):
-                target_copy[row_n, column_n, action[row_n, column_n].to(torch.int32)] = to_update[row_n][column_n]
-
-        predicted = neural_net(state)
-        predicted = predicted.reshape(predicted.shape[0], int(predicted.shape[1] / 2), 2)
-
-    predicted.requires_grad = True
-    target_copy.requires_grad = True
-
-    objective_done = criterion(predicted.to(torch.float32), target_copy.to(torch.float32))
-
+    loss = criterion(predicted.to(torch.float32), target.to(torch.float32))
     optimizer.zero_grad()
-    objective_done.backward()
+    loss.backward()
     optimizer.step()
 
 
@@ -268,18 +302,16 @@ def train():
     confidence_level = 0.95
 
     # Environment() parameters
-    path_assets = 'AGGREGATED_DATA.csv'
+    train_data_path = 'TRAIN.csv'
     lag = 30
     money = 10_000
     n_asset = 20
 
     # instantiate environment
-    env = Environment(path_assets=path_assets, money=money)
-    data = env.data
+    env = Environment(data_path=train_data_path, money=money)
+    data = env.real_data
 
-    initial_alloc = torch.zeros((1, 20), device=DEVICE)
-    state = env.get_new_state(t=lag + 1, lag=lag, last_alloc=initial_alloc, portfolio_val=env.money,
-                              confidence_level=confidence_level)
+    state = env.get_starting_state(lag, confidence_level)
     STATE_DIM = len(state)
     # instantiate agent
     agent = Agent(n_asset=n_asset, input_size=STATE_DIM)
@@ -305,31 +337,36 @@ def train():
     # iterate over all t in train part
     episode = 1
     reward_evolution = []
-    for next_t in range(lag + 2, index_train):
-        weights, best_actions = agent.act(state.flatten())
-        reward, done = env.get_reward(weights=weights, next_day_reward=next_t, lag=lag, es=state.es)
-        if done:
-            env.money = env.money_reset
-        next_state = env.get_new_state(t=next_t, lag=lag, last_alloc=weights, portfolio_val=env.money,
-                                       confidence_level=confidence_level)
-        reward_evolution.append(reward)
-        step = torch.cat(
-            (
-                state.flatten(),
-                best_actions.flatten(),
-                next_state.flatten(),
-                torch.tensor(reward, device=DEVICE).flatten(),
-                torch.tensor(done, device=DEVICE).flatten())
-        )
-        memory_buffer = torch.cat((memory_buffer, step.view(1, step.shape[0])), dim=0)
-        state = next_state
+    n_episodes = 100
+    for next_t in range(n_episodes):
+        env.money = env.money_reset
 
-        # TRAINING LAUNCH
-        if len(memory_buffer) >= BATCH_SIZE:
-            DQNUpdate(neural_net=agent.DQN_net, memory_buffer=memory_buffer,
-                      optimizer=optimizer, agent=agent, device=DEVICE, state_dim=STATE_DIM, BATCH_SIZE=BATCH_SIZE)
-        print(f"EPISODE {episode}, PORTFOLIO: {env.money}, EPS: {agent.epsilon}")
-        episode += 1
+        while True:
+            weights, best_actions = agent.act(state.flatten())
+            reward, done = env.get_reward(weights=weights, next_day_reward=next_t, lag=lag, es=state.es)
+            if done:
+                break
+            next_state = env.get_new_state(t=next_t, lag=lag, last_alloc=weights, portfolio_val=env.money,
+                                           confidence_level=confidence_level)
+            reward_evolution.append(reward)
+            step = torch.cat(
+                (
+                    state.flatten(),
+                    best_actions.flatten(),
+                    next_state.flatten(),
+                    torch.tensor(reward, device=DEVICE).flatten(),
+                    torch.tensor(done, device=DEVICE).flatten())
+            )
+            memory_buffer = torch.cat((memory_buffer, step.view(1, step.shape[0])), dim=0)
+            state = next_state
+
+            # TRAINING LAUNCH
+            if len(memory_buffer) >= BATCH_SIZE:
+                # for _ in range(10):
+                DQNUpdate(neural_net=agent.DQN_net, memory_buffer=memory_buffer,
+                          optimizer=optimizer, agent=agent, device=DEVICE, state_dim=STATE_DIM, BATCH_SIZE=BATCH_SIZE)
+            print(f"EPISODE {episode}, PORTFOLIO: {env.money}, EPS: {agent.epsilon}")
+            episode += 1
 
     plt.figure(figsize=(12, 6))
     plt.plot(range(len(reward_evolution)), reward_evolution, color='green', label='reward train')
@@ -347,36 +384,24 @@ def test():
     confidence_level = 0.95
 
     # Environment() parameters
-    path_assets = 'AGGREGATED_DATA.csv'
+    test_data_path = 'TEST.csv'
     lag = 30
     money = 10_000
     n_asset = 20
 
     # instantiate environment
-    env = Environment(path_assets=path_assets, money=money)
-    data = env.data
+    env = Environment(data_path=test_data_path, money=money)
+    data = env.real_data
     dates = env.dates
 
-    # index to split train-test
-    percentage_train = 80
-    index_train = int((percentage_train / 100) * data.shape[0])
-    dates = dates.iloc[index_train:]
-
     initial_alloc = torch.zeros((1, 20), device=DEVICE)
-    state = env.get_new_state(t=index_train + lag + 1, lag=lag, last_alloc=initial_alloc, portfolio_val=env.money,
+    state = env.get_new_state(t=lag + 1, lag=lag, last_alloc=initial_alloc, portfolio_val=env.money,
                               confidence_level=confidence_level)
     STATE_DIM = len(state)
     DQN_net = torch.load('DQN_net.pth')
     DQN_net.eval()
     # instantiate agent
     agent = Agent(n_asset=n_asset, input_size=STATE_DIM)
-    # print("TRAINED")
-    # for name, param in DQN_net.named_parameters():
-    #     print(f"{name}: {param}")
-    # print('*' * 50)
-    # print("NOT TRAINED")
-    # for name, param in agent.DQN_net.named_parameters():
-    #     print(f"{name}: {param}")
 
     agent.epsilon = 0
     agent.DQN_net = DQN_net
@@ -385,7 +410,7 @@ def test():
     reward_evolution = []
     wallet_evolution = [money]
     weights_evolution = np.empty(shape=(1, n_asset))
-    for next_t in range(index_train, data.shape[0]):
+    for next_t in range(data.shape[0]):
         weights, best_actions = agent.act(state.flatten())
         weights_evolution = np.vstack((weights_evolution, weights.detach().cpu().numpy()))
         reward, done = env.get_reward(weights=weights, next_day_reward=next_t, lag=lag, es=state.es)
@@ -416,14 +441,15 @@ def test():
 
     # Plot Reward Evolution
     plt.figure(figsize=(12, 6))
-    plt.plot(range(index_train, index_train+len(reward_evolution)), reward_evolution, color='red', label='reward test')
+    plt.plot(range(len(reward_evolution)), reward_evolution, color='red',
+             label='reward test')
     plt.title('Reward evolution')
     plt.legend()
     plt.savefig('reward.png', dpi=200)
     plt.show()
     print(f"CUMULATIVE REWARD: {sum(reward_evolution)}")
-    print(f"AVG REWARD: {(1/len(reward_evolution)) *sum(reward_evolution)}")
-    print(f"ROI: {round((wallet_evolution[-1]-money)/money*100, 2)}%")
+    print(f"AVG REWARD: {(1 / len(reward_evolution)) * sum(reward_evolution)}")
+    print(f"ROI: {round((wallet_evolution[-1] - money) / money * 100, 2)}%")
 
 
 if __name__ == "__main__":

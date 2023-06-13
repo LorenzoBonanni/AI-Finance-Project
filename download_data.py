@@ -5,7 +5,7 @@ import yfinance as yf
 import re
 
 if __name__ == "__main__":
-    # data extraction
+    # real_data extraction
 
     # Apple Inc. (AAPL) - Technology
     # Alphabet Inc. (GOOGL) - Technology
